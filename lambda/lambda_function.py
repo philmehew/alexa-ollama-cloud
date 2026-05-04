@@ -1,17 +1,7 @@
 # -*- coding: utf-8 -*-
 
-# Alexa skill that uses a QuestionIntentHandler to proxy a request to a
-# LLM API or Webhook, and provide the answer.
-# Developed by @paulotruta and @inverse
-# as an exploration of voice powered LLM during the early days.
-
-# Uses Alexa Skills Kit SDK for Python.
-# Please visit https://alexa.design/cookbook for additional examples on
-# implementing Alexa features!
-
 import logging
 
-import requests  # noqa: E402
 from ask_sdk_core import utils as ask_utils
 from ask_sdk_core.dispatch_components import (
     AbstractExceptionHandler,
@@ -34,100 +24,64 @@ LLM_KEY = config["llm_key"]
 LLM_MODEL = config["llm_model"]
 LLM_SYSTEM_PROMPT = config.get(
     "llm_system_prompt",
-    """
-    You are a helpful AI assistant that responds by voice.
-    Your answers should be simple and quick.
-    Don't speak back for more than a couple of sentences.
-    If you need to say more things, say that you're happy to continue,
-    and wait for the user to ask you to continue.
-    Remember, your objective is to reply as if your are having a natural
-    conversation, so be relatively brief, and keep that in mind when replying.
-    You were created by jpt.land as part of a personal exploration project.
-    Paulo Truta is a software engineer that worked hard to make you easy!
-    If the user asks about you, tell him you are the Alexa AI Skill.
-    You're an helpful and funny artificial powered assistant,
-    ready to answer any questions a person may have, right on Amazon Alexa.
-""",
+    "You are Ollama, a friendly voice assistant speaking through an Alexa device. Follow these rules strictly: Speak as if you're talking to someone in the same room. Use natural, casual language. Keep every answer under 3 sentences. If there's more to say, end with 'Want to know more?' Never use formatting that only makes sense on screen — no bullet points, numbered lists, markdown, headers, or special characters. Never say 'As an AI' or 'I'm an AI' — you're just Ollama. If you're not sure about something, say so honestly rather than making things up. For yes or no questions, start with yes or no, then give a brief explanation. For how-to questions, give the simplest version, not every possible method. Round numbers — say 'about 50' not '47.3'.",
 )
 
+llm_client = LLMClient(LLM_URL, LLM_KEY, LLM_MODEL)
 
-class LLMQuestionProxy:
-    """Handler to communicate with an LLM via API or Webhook.
-    Ask a question and it shall provide an answer."""
-
-    def __init__(self, llm_client: LLMClient):
-        self.llm_client = llm_client
-
-    def api_request(self, question: str) -> dict:
-        """Send a request to the LLM API and return the response."""
-        logger.info(
-            "API Request - " + self.llm_client.url + " - " + self.llm_client.model
-        )
-
-        try:
-            response = self.llm_client.api_request(LLM_SYSTEM_PROMPT, question)
-
-            logger.info(response)
-
-            return {"message": response["choices"][0]["message"]["content"]}
-        except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP Request failed: {e}")
-            # Return an error message, but only say part of the error message
-            return {
-                "message": f"Sorry, I encountered an error thinking about your request: {str(e)[:100]}"
-            }
-
-    def webhook_request(self, question: str, context: dict) -> dict:
-        """Send a request to the LLM API and return the response."""
-        try:
-            response = self.llm_client.webhook_request(question, context)
-
-            return response
-        except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP Request failed: {e}")
-            # Return an error message, but only say part of the error message
-            return {
-                "message": f"Sorry, I encountered an error processing your \
-                    request: {str(e)[:100]}"
-            }
-
-    def ask(self, question: str, context: dict = {}) -> dict:
-        """Ask a question and get a response."""
-        if LLM_MODEL != "webhook":
-            logger.info("Using API request")
-            return self.api_request(question)
-        else:
-            logger.info("Using Webhook request")
-            return self.webhook_request(question, context)
+# Max conversation turns to keep in history (to stay within token limits)
+MAX_HISTORY = 10
 
 
-class BaseRequestHandler(AbstractRequestHandler):
-    """Base class for request handlers."""
-
-    question = LLMQuestionProxy(LLMClient(LLM_URL, LLM_KEY, LLM_MODEL))
-
-    def can_handle(self, handler_input: HandlerInput) -> bool:
-        return True
-
-    def handle(self, handler_input: HandlerInput) -> Response:
-        raise NotImplementedError
+def get_conversation_history(handler_input):
+    """Get conversation history from session attributes."""
+    session_attr = handler_input.attributes_manager.session_attributes
+    return session_attr.get("conversation_history", [])
 
 
-class LaunchRequestHandler(BaseRequestHandler):
-    """
-    Handler for Skill Launch.
-    This is the first handler that is called when the skill is invoked
-    directly. Will only be invoked if the intent does not have
-    a LaunchRequest handling in its config.
-    """
+def save_to_conversation_history(handler_input, role, content):
+    """Add a message to conversation history and trim old ones."""
+    session_attr = handler_input.attributes_manager.session_attributes
+    history = session_attr.get("conversation_history", [])
+    history.append({"role": role, "content": content})
+    # Keep only the last MAX_HISTORY messages (plus system prompt)
+    if len(history) > MAX_HISTORY:
+        history = history[-MAX_HISTORY:]
+    session_attr["conversation_history"] = history
+
+
+def ask_ollama(handler_input, user_message):
+    """Send a message to Ollama with conversation history and return the response."""
+    history = get_conversation_history(handler_input)
+
+    # Build the messages list
+    messages = []
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    # Save the user message to history
+    save_to_conversation_history(handler_input, "user", user_message)
+
+    # Call Ollama
+    response = llm_client.api_request_with_messages(LLM_SYSTEM_PROMPT, messages)
+
+    # Save the assistant response to history
+    assistant_message = response.get("message", "")
+    if assistant_message:
+        save_to_conversation_history(handler_input, "assistant", assistant_message)
+
+    return response
+
+
+class LaunchRequestHandler(AbstractRequestHandler):
+    """Handler for Skill Launch."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_request_type("LaunchRequest")(handler_input)
 
     def handle(self, handler_input: HandlerInput) -> Response:
-        # TODO: Implement something a bit more dynamic (randomized from a list)
-        speak_output = canned_response.get_launch_handler_phrase()
-
+        speak_output = "AI chat ready. What would you like to know?"
         return (
             handler_input.response_builder.speak(speak_output)
             .ask(speak_output)
@@ -135,70 +89,93 @@ class LaunchRequestHandler(BaseRequestHandler):
         )
 
 
-class QuestionIntentHandler(BaseRequestHandler):
-    """
-    Main Handler for turn chat question/answer flow. Receive a question and provides an answer.
-    """
+class QuestionIntentHandler(AbstractRequestHandler):
+    """Main handler for question/answer flow."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_intent_name("QuestionIntent")(handler_input)
 
     def handle(self, handler_input: HandlerInput) -> Response:
-        # Get the question from the user
         slots = handler_input.request_envelope.request.intent.slots
+
+        if slots is None or "searchQuery" not in slots:
+            speak_output = "I didn't catch your question. Could you try again?"
+            return (
+                handler_input.response_builder.speak(speak_output)
+                .ask(speak_output)
+                .response
+            )
 
         voice_prompt = slots["searchQuery"].value
 
-        logger.info(handler_input.request_envelope)
-        logger.info("User requests: " + voice_prompt)
+        if voice_prompt is None:
+            speak_output = "I didn't catch that. Could you try again?"
+            return (
+                handler_input.response_builder.speak(speak_output)
+                .ask(speak_output)
+                .response
+            )
 
-        context_data = {
-            "user_id": handler_input.request_envelope.session.user.user_id,
-            "device_id": handler_input.request_envelope.context.system.device.device_id,
-            "application_id": handler_input.request_envelope.context.system.application.application_id,
-            "api_access_token": handler_input.request_envelope.context.system.api_access_token,
-            "api_endpoint": handler_input.request_envelope.context.system.api_endpoint,
-            "locale": handler_input.request_envelope.request.locale,
-            "intent": handler_input.request_envelope.request.intent.name,
-        }
+        logger.info("User asks: " + voice_prompt)
 
-        logger.info(context_data)
+        response = ask_ollama(handler_input, voice_prompt)
 
-        # Ask the LLM for a response
-        response = self.question.ask(voice_prompt, context_data)
-
-        logger.info(response)
-        logger.info("LLM Response: " + response["message"])
-
-        # Speak the response or fallback message
-        # TODO: Implement something a bit more dynamic (randomized from a list)
+        logger.info("LLM Response: " + response.get("message", "")[:200])
 
         speak_output = response.get("message", canned_response.get_no_message_phrase())
         return (
             handler_input.response_builder.speak(speak_output)
-            .ask(canned_response.get_reprompt_phrase())
+            .ask("Anything else?")
             .response
         )
 
 
-class HelpIntentHandler(BaseRequestHandler):
+class YesIntentHandler(AbstractRequestHandler):
+    """Handler for 'yes' - treats it as a continuation request."""
+
+    def can_handle(self, handler_input: HandlerInput) -> bool:
+        return ask_utils.is_intent_name("AMAZON.YesIntent")(handler_input)
+
+    def handle(self, handler_input: HandlerInput) -> Response:
+        logger.info("User says yes - continuing conversation")
+        response = ask_ollama(handler_input, "Yes, please tell me more.")
+
+        speak_output = response.get("message", canned_response.get_no_message_phrase())
+        return (
+            handler_input.response_builder.speak(speak_output)
+            .ask("Anything else?")
+            .response
+        )
+
+
+class NoIntentHandler(AbstractRequestHandler):
+    """Handler for 'no' - ends the session."""
+
+    def can_handle(self, handler_input: HandlerInput) -> bool:
+        return ask_utils.is_intent_name("AMAZON.NoIntent")(handler_input)
+
+    def handle(self, handler_input: HandlerInput) -> Response:
+        speak_output = "Alright, goodbye!"
+        return handler_input.response_builder.speak(speak_output).response
+
+
+class HelpIntentHandler(AbstractRequestHandler):
     """Handler for Help Intent."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_intent_name("AMAZON.HelpIntent")(handler_input)
 
     def handle(self, handler_input: HandlerInput) -> Response:
-        speak_output = canned_response.get_help_phrase()
-
+        speak_output = "You can ask me anything. Try saying tell me about, what is, or who is, followed by your topic."
         return (
             handler_input.response_builder.speak(speak_output)
-            .ask(canned_response.get_reprompt_phrase())
+            .ask(speak_output)
             .response
         )
 
 
-class CancelOrStopIntentHandler(BaseRequestHandler):
-    """Single handler for Cancel and Stop Intent."""
+class CancelOrStopIntentHandler(AbstractRequestHandler):
+    """Handler for Cancel and Stop Intent."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_intent_name("AMAZON.CancelIntent")(
@@ -206,34 +183,26 @@ class CancelOrStopIntentHandler(BaseRequestHandler):
         ) or ask_utils.is_intent_name("AMAZON.StopIntent")(handler_input)
 
     def handle(self, handler_input: HandlerInput) -> Response:
-        # TODO: Implement something a bit more dynamic (randomized from a list)
         speak_output = canned_response.get_goodbye_phrase()
         return handler_input.response_builder.speak(speak_output).response
 
 
-class FallbackIntentHandler(BaseRequestHandler):
-    """Single handler for Fallback Intent."""
+class FallbackIntentHandler(AbstractRequestHandler):
+    """Handler for Fallback Intent."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_intent_name("AMAZON.FallbackIntent")(handler_input)
 
     def handle(self, handler_input: HandlerInput) -> Response:
         logger.info("In FallbackIntentHandler")
-
-        # TODO: Find a way to get the last question asked
-        # (utterance that triggered this).
-        # Due to the way the fallbackintenthandler is structured,
-        # this does not seem possible atm.
-        voice_prompt = canned_response.get_fallback_handler_phrase()
-        logger.info("Response:  " + voice_prompt)
-
-        speech = voice_prompt
-        reprompt = canned_response.get_reprompt_phrase()
-
-        return handler_input.response_builder.speak(speech).ask(reprompt).response
+        speak_output = (
+            "I didn't catch that. Try starting with tell me about, what is, or who is."
+        )
+        reprompt = "What would you like to know?"
+        return handler_input.response_builder.speak(speak_output).ask(reprompt).response
 
 
-class SessionEndedRequestHandler(BaseRequestHandler):
+class SessionEndedRequestHandler(AbstractRequestHandler):
     """Handler for Session End."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
@@ -243,16 +212,8 @@ class SessionEndedRequestHandler(BaseRequestHandler):
         return handler_input.response_builder.response
 
 
-class IntentReflectorHandler(BaseRequestHandler):
-    """
-    The intent reflector is used for interaction
-    model testing and debugging.
-
-    It will simply repeat the intent the user said.
-    You can create custom handlers for your intents by defining them above,
-    then also adding them to the request
-    handler chain below.
-    """
+class IntentReflectorHandler(AbstractRequestHandler):
+    """Reflects the intent name back for debugging."""
 
     def can_handle(self, handler_input: HandlerInput) -> bool:
         return ask_utils.is_request_type("IntentRequest")(handler_input)
@@ -260,7 +221,6 @@ class IntentReflectorHandler(BaseRequestHandler):
     def handle(self, handler_input: HandlerInput) -> Response:
         intent_name = ask_utils.get_intent_name(handler_input)
         speak_output = "You just triggered " + intent_name + "."
-
         return (
             handler_input.response_builder.speak(speak_output)
             .ask(canned_response.get_reprompt_phrase())
@@ -269,45 +229,27 @@ class IntentReflectorHandler(BaseRequestHandler):
 
 
 class CatchAllExceptionHandler(AbstractExceptionHandler):
-    """Generic error handling to capture any syntax or routing errors.
-
-    If you receive an error stating the request handler chain is not found,
-    you have not implemented a handler for the intent being invoked or included
-    it in the skill builder below.
-    """
+    """Generic error handler."""
 
     def can_handle(self, handler_input: HandlerInput, exception: Exception) -> bool:
         return True
 
     def handle(self, handler_input: HandlerInput, exception: Exception) -> Response:
         logger.error(exception, exc_info=True)
-
-        speak_output = canned_response.get_fallback_handler_phrase()
-
+        speak_output = "Sorry, something went wrong. Please try again."
         return handler_input.response_builder.speak(speak_output).response
 
 
-# The SkillBuilder object acts as the entry point for your skill
-# It is basically the router for request / responses
-# Declaration order matters - they're processed top to bottom.
-
 sb = SkillBuilder()
-
-# first add all the request handlers
-
 sb.add_request_handler(LaunchRequestHandler())
 sb.add_request_handler(QuestionIntentHandler())
+sb.add_request_handler(YesIntentHandler())
+sb.add_request_handler(NoIntentHandler())
 sb.add_request_handler(HelpIntentHandler())
 sb.add_request_handler(CancelOrStopIntentHandler())
 sb.add_request_handler(FallbackIntentHandler())
 sb.add_request_handler(SessionEndedRequestHandler())
-
-# naking sure IntentReflectorHandler is last
-# (doesn't override your custom handlers)
-
 sb.add_request_handler(IntentReflectorHandler())
-
-# finally add the exception handler
 sb.add_exception_handler(CatchAllExceptionHandler())
 
 lambda_handler = sb.lambda_handler()
