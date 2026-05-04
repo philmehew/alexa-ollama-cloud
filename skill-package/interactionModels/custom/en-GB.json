@@ -1,0 +1,211 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "ai chat",
+      "modelConfiguration": {
+        "fallbackIntentSensitivity": {
+          "level": "LOW"
+        }
+      },
+      "intents": [
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "QuestionIntent",
+          "slots": [
+            {
+              "name": "searchQuery",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "maybe {searchQuery}",
+            "no {searchQuery}",
+            "yes {searchQuery}",
+            "could {searchQuery}",
+            "tell me about {searchQuery}",
+            "tell me {searchQuery}",
+            "tell me more about {searchQuery}",
+            "tell me more {searchQuery}",
+            "if {searchQuery}",
+            "for {searchQuery}",
+            "when {searchQuery}",
+            "when was {searchQuery}",
+            "when did {searchQuery}",
+            "who {searchQuery}",
+            "who is {searchQuery}",
+            "who was {searchQuery}",
+            "who are {searchQuery}",
+            "how {searchQuery}",
+            "how do I {searchQuery}",
+            "how does {searchQuery}",
+            "how can I {searchQuery}",
+            "how to {searchQuery}",
+            "what {searchQuery}",
+            "what is {searchQuery}",
+            "what are {searchQuery}",
+            "what was {searchQuery}",
+            "what does {searchQuery} mean",
+            "what can you tell me about {searchQuery}",
+            "the question {searchQuery}",
+            "about {searchQuery}",
+            "why is {searchQuery}",
+            "why does {searchQuery}",
+            "why did {searchQuery}",
+            "where is {searchQuery}",
+            "where are {searchQuery}",
+            "can you explain {searchQuery}",
+            "can you tell me {searchQuery}",
+            "can you tell me about {searchQuery}",
+            "I want to know {searchQuery}",
+            "I need to know {searchQuery}",
+            "I'm curious about {searchQuery}",
+            "I'm wondering {searchQuery}",
+            "I wonder {searchQuery}",
+            "do you know {searchQuery}",
+            "do you know about {searchQuery}",
+            "explain {searchQuery}",
+            "describe {searchQuery}",
+            "define {searchQuery}",
+            "give me {searchQuery}",
+            "let's talk about {searchQuery}",
+            "help me with {searchQuery}",
+            "help me understand {searchQuery}",
+            "I need help with {searchQuery}",
+            "I'd like to know {searchQuery}",
+            "just {searchQuery}",
+            "also {searchQuery}",
+            "and {searchQuery}",
+            "so {searchQuery}",
+            "actually {searchQuery}",
+            "I think {searchQuery}",
+            "I feel like {searchQuery}",
+            "now tell me about {searchQuery}",
+            "now {searchQuery}",
+            "another question {searchQuery}",
+            "one more {searchQuery}",
+            "what else can you tell me about {searchQuery}",
+            "more about {searchQuery}",
+            "continue {searchQuery}",
+            "we're {searchQuery}",
+            "oh {searchQuery}",
+            "can {searchQuery}",
+            "search for {searchQuery}",
+            "search online for {searchQuery}",
+            "look up {searchQuery}",
+            "look it up {searchQuery}",
+            "check online for {searchQuery}",
+            "check the latest news on {searchQuery}",
+            "find {searchQuery}",
+            "google {searchQuery}",
+            "what is the latest on {searchQuery}",
+            "what's the latest on {searchQuery}",
+            "what happened with {searchQuery}",
+            "what's happened with {searchQuery}",
+            "any news on {searchQuery}",
+            "what's new with {searchQuery}",
+            "who's {searchQuery}",
+            "where's {searchQuery}",
+            "what's {searchQuery}",
+            "how's {searchQuery}",
+            "when's {searchQuery}",
+            "why's {searchQuery}",
+            "what're {searchQuery}"
+          ]
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        }
+      ],
+      "types": []
+    },
+    "dialog": {
+      "intents": [
+        {
+          "name": "QuestionIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "searchQuery",
+              "type": "AMAZON.SearchQuery",
+              "confirmationRequired": false,
+              "elicitationRequired": true,
+              "prompts": {
+                "elicitation": "Elicit.Slot.29691672240.1575270597350"
+              }
+            }
+          ]
+        }
+      ],
+      "delegationStrategy": "ALWAYS"
+    },
+    "prompts": [
+      {
+        "id": "Elicit.Slot.604331776974.404371559008",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "What's on your mind?"
+          },
+          {
+            "type": "PlainText",
+            "value": "Tell me what you want to know"
+          },
+          {
+            "type": "PlainText",
+            "value": "What is your question?"
+          }
+        ]
+      },
+      {
+        "id": "Elicit.Slot.29691672240.1575270597350",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "What's up?"
+          },
+          {
+            "type": "PlainText",
+            "value": "How can AI help you today?"
+          },
+          {
+            "type": "PlainText",
+            "value": "What is your question?"
+          },
+          {
+            "type": "PlainText",
+            "value": "Absolutely. What is your question?"
+          },
+          {
+            "type": "PlainText",
+            "value": "Sure. What's on your mind?"
+          }
+        ]
+      }
+    ]
+  }
+}

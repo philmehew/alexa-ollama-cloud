@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 config = load_config()
-canned_response = CannedResponse("en-US")
+canned_response = CannedResponse("en-GB")
 
 LLM_URL = config["llm_url"]
 LLM_KEY = config["llm_key"]
@@ -27,7 +27,42 @@ LLM_SYSTEM_PROMPT = config.get(
     "You are Ollama, a friendly voice assistant speaking through an Alexa device. Follow these rules strictly: Speak as if you're talking to someone in the same room. Use natural, casual language. Keep every answer under 3 sentences. If there's more to say, end with 'Want to know more?' Never use formatting that only makes sense on screen — no bullet points, numbered lists, markdown, headers, or special characters. Never say 'As an AI' or 'I'm an AI' — you're just Ollama. If you're not sure about something, say so honestly rather than making things up. For yes or no questions, start with yes or no, then give a brief explanation. For how-to questions, give the simplest version, not every possible method. Round numbers — say 'about 50' not '47.3'.",
 )
 
-llm_client = LLMClient(LLM_URL, LLM_KEY, LLM_MODEL)
+WEB_SEARCH_URL = config.get("web_search_url", "https://ollama.com/api/web_search")
+
+llm_client = LLMClient(LLM_URL, LLM_KEY, LLM_MODEL, WEB_SEARCH_URL)
+
+# Keywords that suggest a question needs current/real-time information
+NEEDS_SEARCH_KEYWORDS = [
+    "latest",
+    "news",
+    "today",
+    "current",
+    "recent",
+    "now",
+    "this week",
+    "this month",
+    "this year",
+    "happening",
+    "update",
+    "score",
+    "weather",
+    "price",
+    "stock",
+    "election",
+    "result",
+    "live",
+    "tonight",
+    "yesterday",
+    "online",
+    "internet",
+    "search",
+    "look up",
+    "look it up",
+    "find",
+    "check",
+    "google",
+    "lookup",
+]
 
 # Max conversation turns to keep in history (to stay within token limits)
 MAX_HISTORY = 10
@@ -50,15 +85,49 @@ def save_to_conversation_history(handler_input, role, content):
     session_attr["conversation_history"] = history
 
 
-def ask_ollama(handler_input, user_message):
+def needs_web_search(query: str) -> bool:
+    """Check if a query likely needs web search for current information."""
+    query_lower = query.lower()
+    return any(kw in query_lower for kw in NEEDS_SEARCH_KEYWORDS)
+
+
+def format_search_results(results: list) -> str:
+    """Format search results into context text for the LLM."""
+    if not results:
+        return ""
+    # Limit to 3 results, truncate each to 500 chars for better context
+    MAX_RESULTS = 3
+    MAX_CONTENT_LEN = 500
+    parts = []
+    for r in results[:MAX_RESULTS]:
+        title = r.get("title", "")
+        content = r.get("content", "")[:MAX_CONTENT_LEN]
+        if content:
+            parts.append(f"{title}: {content}" if title else content)
+    return "\n".join(parts)
+
+
+def ask_ollama(handler_input, user_message, search_context=None):
     """Send a message to Ollama with conversation history and return the response."""
     history = get_conversation_history(handler_input)
+
+    # If we have search results, augment the user message
+    if search_context:
+        augmented_message = (
+            f"IMPORTANT: Use the search results below as your primary source of information. "
+            f"They contain current, up-to-date facts that may differ from your training data. "
+            f"Always trust the search results over your training data.\n\n"
+            f"Search results:\n{search_context}\n\n"
+            f"User question: {user_message}"
+        )
+    else:
+        augmented_message = user_message
 
     # Build the messages list
     messages = []
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": augmented_message})
 
     # Save the user message to history
     save_to_conversation_history(handler_input, "user", user_message)
@@ -118,7 +187,35 @@ class QuestionIntentHandler(AbstractRequestHandler):
 
         logger.info("User asks: " + voice_prompt)
 
-        response = ask_ollama(handler_input, voice_prompt)
+        # Check for existing search context from a previous question in this session.
+        # Reusing context on follow-ups avoids re-searching (saves time) and preserves
+        # context so "tell me more about the crew" stays on topic.
+        search_context = handler_input.attributes_manager.session_attributes.get(
+            "last_search_context"
+        )
+        if search_context:
+            logger.info("Reusing existing search context for follow-up question")
+        else:
+            # No existing context — search for fresh results.
+            # Always search because carrier phrases are stripped by AMAZON.SearchQuery.
+            logger.info("Attempting web search for: " + voice_prompt)
+            search_results = llm_client.web_search(voice_prompt)
+            logger.info("Search results count: " + str(len(search_results)))
+            search_context = format_search_results(search_results)
+            if search_context:
+                logger.info(
+                    "Search context length: " + str(len(search_context)) + " chars"
+                )
+                handler_input.attributes_manager.session_attributes[
+                    "last_search_context"
+                ] = search_context
+            else:
+                logger.info("No search context generated")
+                search_context = None
+
+        response = ask_ollama(
+            handler_input, voice_prompt, search_context=search_context
+        )
 
         logger.info("LLM Response: " + response.get("message", "")[:200])
 
@@ -138,7 +235,13 @@ class YesIntentHandler(AbstractRequestHandler):
 
     def handle(self, handler_input: HandlerInput) -> Response:
         logger.info("User says yes - continuing conversation")
-        response = ask_ollama(handler_input, "Yes, please tell me more.")
+        # Re-use search context from the previous question if available
+        search_context = handler_input.attributes_manager.session_attributes.get(
+            "last_search_context"
+        )
+        response = ask_ollama(
+            handler_input, "Yes, please tell me more.", search_context=search_context
+        )
 
         speak_output = response.get("message", canned_response.get_no_message_phrase())
         return (
