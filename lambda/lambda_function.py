@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import re
+from datetime import datetime
 
 from ask_sdk_core import utils as ask_utils
 from ask_sdk_core.dispatch_components import (
@@ -85,10 +87,48 @@ def save_to_conversation_history(handler_input, role, content):
     session_attr["conversation_history"] = history
 
 
+def clean_search_query(text: str) -> str:
+    """Strip leading prepositions/articles left by Alexa carrier phrase removal.
+
+    AMAZON.SearchQuery strips the carrier phrase (e.g. "who is") but leaves
+    behind words like "in the", "about", "the" that made sense grammatically
+    but produce poor search queries.
+    """
+    words = text.strip().split()
+    # Words that commonly trail a carrier phrase and should be stripped
+    strip_words = {
+        "in",
+        "the",
+        "a",
+        "an",
+        "of",
+        "about",
+        "for",
+        "with",
+        "on",
+        "at",
+        "to",
+        "from",
+        "by",
+        "that",
+        "this",
+    }
+    while words and words[0].lower() in strip_words:
+        words.pop(0)
+    return " ".join(words) if words else text.strip()
+
+
 def needs_web_search(query: str) -> bool:
     """Check if a query likely needs web search for current information."""
     query_lower = query.lower()
     return any(kw in query_lower for kw in NEEDS_SEARCH_KEYWORDS)
+
+
+def response_mentions_outdated_year(response_text: str) -> bool:
+    """Check if an LLM response mentions years that are in the past."""
+    current_year = datetime.now().year
+    years_found = re.findall(r"\b(20\d{2})\b", response_text)
+    return any(int(y) < current_year for y in years_found)
 
 
 def format_search_results(results: list) -> str:
@@ -114,9 +154,11 @@ def ask_ollama(handler_input, user_message, search_context=None):
     # If we have search results, augment the user message
     if search_context:
         augmented_message = (
-            f"IMPORTANT: Use the search results below as your primary source of information. "
+            f"Use the search results below as your primary source of information. "
             f"They contain current, up-to-date facts that may differ from your training data. "
-            f"Always trust the search results over your training data.\n\n"
+            f"Always trust the search results over your training data. "
+            f"Never mention or reference the search results directly — just use them to answer naturally. "
+            f"Don't say things like 'the search results say' or 'aren't listed here'.\n\n"
             f"Search results:\n{search_context}\n\n"
             f"User question: {user_message}"
         )
@@ -187,6 +229,11 @@ class QuestionIntentHandler(AbstractRequestHandler):
 
         logger.info("User asks: " + voice_prompt)
 
+        # Clean the slot value for search — strip carrier-phrase leftovers
+        # like "in the" from "who is in the british superbike championship"
+        search_query = clean_search_query(voice_prompt)
+        logger.info("Cleaned search query: " + search_query)
+
         # Check for existing search context from a previous question in this session.
         # Reusing context on follow-ups avoids re-searching (saves time) and preserves
         # context so "tell me more about the crew" stays on topic.
@@ -198,8 +245,8 @@ class QuestionIntentHandler(AbstractRequestHandler):
         else:
             # No existing context — search for fresh results.
             # Always search because carrier phrases are stripped by AMAZON.SearchQuery.
-            logger.info("Attempting web search for: " + voice_prompt)
-            search_results = llm_client.web_search(voice_prompt)
+            logger.info("Attempting web search for: " + search_query)
+            search_results = llm_client.web_search(search_query)
             logger.info("Search results count: " + str(len(search_results)))
             search_context = format_search_results(search_results)
             if search_context:
@@ -220,6 +267,19 @@ class QuestionIntentHandler(AbstractRequestHandler):
         logger.info("LLM Response: " + response.get("message", "")[:200])
 
         speak_output = response.get("message", canned_response.get_no_message_phrase())
+
+        # If the response mentions past years and we didn't search, offer to
+        # re-run with web search for up-to-date information.
+        if response_mentions_outdated_year(speak_output) and not search_context:
+            handler_input.attributes_manager.session_attributes[
+                "pending_search_query"
+            ] = voice_prompt
+            return (
+                handler_input.response_builder.speak(speak_output)
+                .ask("Would you like me to check online for the latest information?")
+                .response
+            )
+
         return (
             handler_input.response_builder.speak(speak_output)
             .ask("Anything else?")
@@ -235,7 +295,34 @@ class YesIntentHandler(AbstractRequestHandler):
 
     def handle(self, handler_input: HandlerInput) -> Response:
         logger.info("User says yes - continuing conversation")
-        # Re-use search context from the previous question if available
+
+        # If the user was offered a web search for outdated info, re-run the
+        # original question with fresh search context.
+        pending_query = handler_input.attributes_manager.session_attributes.pop(
+            "pending_search_query", None
+        )
+        if pending_query:
+            search_query = clean_search_query(pending_query)
+            logger.info("Re-running query with web search: " + search_query)
+            search_results = llm_client.web_search(search_query)
+            search_context = format_search_results(search_results)
+            if search_context:
+                handler_input.attributes_manager.session_attributes[
+                    "last_search_context"
+                ] = search_context
+            response = ask_ollama(
+                handler_input, pending_query, search_context=search_context
+            )
+            speak_output = response.get(
+                "message", canned_response.get_no_message_phrase()
+            )
+            return (
+                handler_input.response_builder.speak(speak_output)
+                .ask("Anything else?")
+                .response
+            )
+
+        # Normal continuation — reuse existing search context.
         search_context = handler_input.attributes_manager.session_attributes.get(
             "last_search_context"
         )
